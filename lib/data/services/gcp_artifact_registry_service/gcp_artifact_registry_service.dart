@@ -11,72 +11,37 @@ final _logger = Logger('GcpArtifactRegistryService');
 /// Provides the authentication header for API requests.
 typedef AuthHeaderProvider = String? Function();
 
-/// Provides the GCP project ID.
-typedef ProjectIdProvider = String Function();
-
-/// Provides the GCP location/region.
-typedef LocationProvider = String Function();
-
-/// Provides the Artifact Registry repository name.
-typedef RepositoryProvider = String Function();
-
 class GcpArtifactRegistryService {
-  GcpArtifactRegistryService(this._client);
+  GcpArtifactRegistryService({
+    http.Client? client,
+    required String projectId,
+    required String location,
+    required String repository,
+  }) : _client = client ?? http.Client(),
+       _projectId = projectId,
+       _location = location,
+       _repository = repository;
 
   final http.Client _client;
+  // These do not change through the app lifecycle, so they can be provided at construction (if you were to change these attributes you would restart the server)
+  final String _projectId;
+  final String _location;
+  final String _repository;
 
+  // The auth token values may change during the apps lifecycle so we use that as an auth token provider
   AuthHeaderProvider? _authHeaderProvider;
-  ProjectIdProvider? _projectIdProvider;
-  LocationProvider? _locationProvider;
-  RepositoryProvider? _repositoryProvider;
 
   set authHeaderProvider(AuthHeaderProvider provider) {
     _authHeaderProvider = provider;
   }
 
-  set projectIdProvider(ProjectIdProvider provider) {
-    _projectIdProvider = provider;
-  }
-
-  set locationProvider(LocationProvider provider) {
-    _locationProvider = provider;
-  }
-
-  set repositoryProvider(RepositoryProvider provider) {
-    _repositoryProvider = provider;
-  }
-
-  Map<String, String> _buildHeaders() {
+  Future<Map<String, String>> _buildHeaders() async {
     final headers = <String, String>{};
-    final authHeader = _authHeaderProvider?.call();
+    final authHeader = await _authHeaderProvider?.call();
     if (authHeader != null) {
       headers['Authorization'] = authHeader;
     }
     return headers;
-  }
-
-  String _getProjectId() {
-    final projectId = _projectIdProvider?.call();
-    if (projectId == null) {
-      throw ArtifactRegistryException('Project ID provider not configured');
-    }
-    return projectId;
-  }
-
-  String _getLocation() {
-    final location = _locationProvider?.call();
-    if (location == null) {
-      throw ArtifactRegistryException('Location provider not configured');
-    }
-    return location;
-  }
-
-  String _getRepository() {
-    final repository = _repositoryProvider?.call();
-    if (repository == null) {
-      throw ArtifactRegistryException('Repository provider not configured');
-    }
-    return repository;
   }
 
   /// Upload a generic artifact (Dart package) to Artifact Registry
@@ -95,12 +60,8 @@ class GcpArtifactRegistryService {
     try {
       _logger.info('Uploading artifact: $packageName@$version');
 
-      // Construct the upload URL
-      final projectId = _getProjectId();
-      final location = _getLocation();
-      final repository = _getRepository();
       final parent =
-          'projects/$projectId/locations/$location/repositories/$repository';
+          'projects/$_projectId/locations/$_location/repositories/$_repository';
       final uploadUrl =
           'https://artifactregistry.googleapis.com/upload/v1/$parent/genericArtifacts:create?alt=json';
 
@@ -108,7 +69,7 @@ class GcpArtifactRegistryService {
       final request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
 
       // Add authorization header
-      request.headers.addAll(_buildHeaders());
+      request.headers.addAll(await _buildHeaders());
 
       // Add metadata
       final metadata = {
@@ -158,19 +119,15 @@ class GcpArtifactRegistryService {
     try {
       _logger.info('Downloading artifact: $packageName@$version/$filename');
 
-      // Construct the download path
-      final projectId = _getProjectId();
-      final location = _getLocation();
-      final repository = _getRepository();
       final parent =
-          'projects/$projectId/locations/$location/repositories/$repository';
+          'projects/$_projectId/locations/$_location/repositories/$_repository';
       final downloadUrl =
           'https://artifactregistry.googleapis.com/v1/$parent/genericArtifacts/$packageName:$version/$filename?alt=media';
 
       // Make download request
       final response = await _client.get(
         Uri.parse(downloadUrl),
-        headers: _buildHeaders(),
+        headers: await _buildHeaders(),
       );
 
       if (response.statusCode != 200) {
@@ -202,19 +159,15 @@ class GcpArtifactRegistryService {
     try {
       _logger.info('Listing versions for package: $packageName');
 
-      // Use the Files API to list artifacts
-      final projectId = _getProjectId();
-      final location = _getLocation();
-      final repository = _getRepository();
       final parent =
-          'projects/$projectId/locations/$location/repositories/$repository';
+          'projects/$_projectId/locations/$_location/repositories/$_repository';
 
       final url =
           'https://artifactregistry.googleapis.com/v1/$parent/files?filter=package_id="$packageName"';
 
       final response = await _client.get(
         Uri.parse(url),
-        headers: _buildHeaders(),
+        headers: await _buildHeaders(),
       );
 
       if (response.statusCode != 200) {
@@ -275,11 +228,8 @@ class GcpArtifactRegistryService {
     required String version,
   }) async {
     try {
-      final projectId = _getProjectId();
-      final location = _getLocation();
-      final repository = _getRepository();
       final parent =
-          'projects/$projectId/locations/$location/repositories/$repository';
+          'projects/$_projectId/locations/$_location/repositories/$_repository';
       final filter = 'package_id="$packageName" AND version_id="$version"';
 
       final url =
@@ -287,7 +237,7 @@ class GcpArtifactRegistryService {
 
       final response = await _client.get(
         Uri.parse(url),
-        headers: _buildHeaders(),
+        headers: await _buildHeaders(),
       );
 
       if (response.statusCode != 200) {
