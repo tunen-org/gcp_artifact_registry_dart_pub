@@ -15,7 +15,7 @@ void main(List<String> args) async {
   final projectId = Platform.environment['GCP_PROJECT'];
   final location = Platform.environment['GCP_LOCATION'];
   final repository = Platform.environment['GCP_REPOSITORY'];
-  final host = Platform.environment['HOST'] ?? '0.0,0.0';
+  final host = Platform.environment['HOST'] ?? '0.0.0.0';
   final port = int.tryParse(Platform.environment['PORT'] ?? '8080') ?? 8080;
   final baseUrl = Platform.environment['BASE_URL'] ?? 'http://$host:$port';
 
@@ -37,7 +37,6 @@ void main(List<String> args) async {
 
   // Dependencies
   // Try Application Default Credentials first (works on Cloud Run)
-  // TODO: Make sure to close the auth and http clients when done
   final authClient = await clientViaApplicationDefaultCredentials(
     scopes: _scopes,
   );
@@ -54,7 +53,10 @@ void main(List<String> args) async {
     googleAuthService: googleAuthService,
     baseUrl: config.baseUrl,
   );
-  final api = PubApi(packageManagerRepository);
+  final api = PubApi(
+    packageManagerRepository: packageManagerRepository,
+    baseUrl: config.baseUrl,
+  );
 
   // Configure a pipeline
   final handler = Pipeline()
@@ -63,7 +65,19 @@ void main(List<String> args) async {
       .addMiddleware(_corsMiddleware())
       .addHandler(api.buildRouter().call);
 
+  // Start server
   final server = await serve(handler, config.host, config.port);
+
+  // Handle graceful shutdown
+  ProcessSignal.sigint.watch().listen((_) async {
+    print("Shutting down server");
+    await server.close();
+    httpClient.close();
+    authClient.close();
+    print("Server shut down");
+    exit(0);
+  });
+
   print('Server listening on port ${server.port}');
 }
 
