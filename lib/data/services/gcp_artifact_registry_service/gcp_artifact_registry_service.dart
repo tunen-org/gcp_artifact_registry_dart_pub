@@ -35,9 +35,9 @@ class GcpArtifactRegistryService {
     _authHeaderProvider = provider;
   }
 
-  Future<Map<String, String>> _buildHeaders() async {
+  Map<String, String> _buildHeaders() {
     final headers = <String, String>{};
-    final authHeader = await _authHeaderProvider?.call();
+    final authHeader = _authHeaderProvider?.call();
     if (authHeader != null) {
       headers['Authorization'] = authHeader;
     }
@@ -69,7 +69,7 @@ class GcpArtifactRegistryService {
       final request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
 
       // Add authorization header
-      request.headers.addAll(await _buildHeaders());
+      request.headers.addAll(_buildHeaders());
 
       // Add metadata
       final metadata = {
@@ -121,13 +121,20 @@ class GcpArtifactRegistryService {
 
       final parent =
           'projects/$_projectId/locations/$_location/repositories/$_repository';
+
+      // The file name in the Files API uses colons as separators: packageName:version:filename
+      // We need to use the full path to the file resource
+      final filePath = '$parent/files/$packageName:$version:$filename';
+      // Use the download method
       final downloadUrl =
-          'https://artifactregistry.googleapis.com/v1/$parent/genericArtifacts/$packageName:$version/$filename?alt=media';
+          'https://artifactregistry.googleapis.com/v1/$filePath:download?alt=media';
+
+      _logger.info('Download URL: $downloadUrl');
 
       // Make download request
       final response = await _client.get(
         Uri.parse(downloadUrl),
-        headers: await _buildHeaders(),
+        headers: _buildHeaders(),
       );
 
       if (response.statusCode != 200) {
@@ -162,13 +169,23 @@ class GcpArtifactRegistryService {
       final parent =
           'projects/$_projectId/locations/$_location/repositories/$_repository';
 
-      final url =
-          'https://artifactregistry.googleapis.com/v1/$parent/files?filter=package_id="$packageName"';
+      // List all files in the repository
+      final url = 'https://artifactregistry.googleapis.com/v1/$parent/files';
+
+      _logger.info('Request URL: $url');
 
       final response = await _client.get(
         Uri.parse(url),
-        headers: await _buildHeaders(),
+        headers: _buildHeaders(),
       );
+
+      _logger.info('Response status: ${response.statusCode}');
+
+      if (response.statusCode == 404) {
+        // Repository doesn't exist, return empty list
+        _logger.info('Repository or package not found: $packageName');
+        return [];
+      }
 
       if (response.statusCode != 200) {
         throw ArtifactRegistryException(
@@ -180,24 +197,35 @@ class GcpArtifactRegistryService {
 
       final json = jsonDecode(response.body) as Map<String, dynamic>;
 
-      // Extract unique versions from the files
+      // Extract version names from the files array
       final versions = <String>{};
-      final files = json['files'] as List<dynamic>?;
-      if (files != null) {
-        for (final file in files) {
-          // File names typically include version information
-          // Parse version from metadata or name
-          final name = file['name'] as String? ?? '';
-          // Extract version from name pattern: packages/{package}/versions/{version}/...
-          final versionMatch = RegExp(r'/versions/([^/]+)/').firstMatch(name);
-          if (versionMatch != null) {
-            versions.add(versionMatch.group(1)!);
+      final fileObjects = json['files'] as List<dynamic>?;
+
+      if (fileObjects != null) {
+        for (final fileObj in fileObjects) {
+          final fileMap = fileObj as Map<String, dynamic>;
+
+          // The owner field contains the package/version path:
+          // e.g., "projects/.../packages/norman-firestore-serializer/versions/0.20.7"
+          final owner = fileMap['owner'] as String? ?? '';
+
+          // Check if this file belongs to our package
+          if (owner.contains('/packages/$packageName/versions/')) {
+            // Extract version from owner path (last segment after /versions/)
+            final segments = owner.split('/versions/');
+            if (segments.length > 1) {
+              final version = segments.last;
+              if (version.isNotEmpty) {
+                versions.add(version);
+              }
+            }
           }
         }
       }
 
       _logger.info('Found ${versions.length} versions for $packageName');
-      return versions.toList()..sort();
+      final sortedVersions = versions.toList()..sort();
+      return sortedVersions;
     } catch (e, stackTrace) {
       _logger.severe('Error listing package versions', e, stackTrace);
       if (e is ArtifactRegistryException) rethrow;
@@ -214,8 +242,17 @@ class GcpArtifactRegistryService {
     required String version,
   }) async {
     try {
-      final versions = await listPackageVersions(packageName);
-      return versions.contains(version);
+      final parent =
+          'projects/$_projectId/locations/$_location/repositories/$_repository';
+      final versionPath = '$parent/packages/$packageName/versions/$version';
+      final url = 'https://artifactregistry.googleapis.com/v1/$versionPath';
+
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _buildHeaders(),
+      );
+
+      return response.statusCode == 200;
     } catch (e) {
       _logger.warning('Error checking package existence: $e');
       return false;
@@ -230,14 +267,12 @@ class GcpArtifactRegistryService {
     try {
       final parent =
           'projects/$_projectId/locations/$_location/repositories/$_repository';
-      final filter = 'package_id="$packageName" AND version_id="$version"';
-
-      final url =
-          'https://artifactregistry.googleapis.com/v1/$parent/files?filter=$filter';
+      final versionPath = '$parent/packages/$packageName/versions/$version';
+      final url = 'https://artifactregistry.googleapis.com/v1/$versionPath';
 
       final response = await _client.get(
         Uri.parse(url),
-        headers: await _buildHeaders(),
+        headers: _buildHeaders(),
       );
 
       if (response.statusCode != 200) {
@@ -246,19 +281,12 @@ class GcpArtifactRegistryService {
       }
 
       final json = jsonDecode(response.body) as Map<String, dynamic>;
-      final files = json['files'] as List<dynamic>?;
 
-      if (files == null || files.isEmpty) {
-        return null;
-      }
-
-      final file = files.first as Map<String, dynamic>;
       return {
-        'name': file['name'],
-        'size': file['sizeBytes'],
-        'createTime': file['createTime'],
-        'updateTime': file['updateTime'],
-        'owner': file['owner'],
+        'name': json['name'],
+        'createTime': json['createTime'],
+        'updateTime': json['updateTime'],
+        'description': json['description'],
       };
     } catch (e) {
       _logger.warning('Error getting artifact details: $e');
