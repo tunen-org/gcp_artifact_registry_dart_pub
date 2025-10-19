@@ -31,12 +31,6 @@ variable "service_name" {
   default     = "pub-api"
 }
 
-variable "artifact_repo_name" {
-  description = "Artifact Registry repository name for Docker images"
-  type        = string
-  default     = "docker-image-repository"
-}
-
 variable "github_repo" {
   description = "GitHub repository in format 'owner/repo'"
   type        = string
@@ -72,23 +66,13 @@ resource "google_project_service" "required_apis" {
   disable_on_destroy = false
 }
 
-# Create Artifact Registry repository for Docker images
-resource "google_artifact_registry_repository" "docker_repo" {
-  location      = var.region
-  repository_id = var.artifact_repo_name
-  description   = "Docker repository for Cloud Run images"
-  format        = "DOCKER"
-
-  depends_on = [google_project_service.required_apis]
-}
-
 # Service Account for Cloud Run
 resource "google_service_account" "cloud_run_sa" {
   account_id   = "${var.service_name}-sa"
   display_name = "Service Account for ${var.service_name} Cloud Run service"
 }
 
-# Grant Cloud Run SA permissions to access Artifact Registry
+# Grant Cloud Run SA permissions to read from Artifact Registry (for the Pub API functionality)
 resource "google_project_iam_member" "cloud_run_artifact_registry" {
   project = var.project_id
   role    = "roles/artifactregistry.reader"
@@ -112,7 +96,6 @@ resource "google_service_account" "cloud_build_sa" {
 resource "google_project_iam_member" "cloud_build_permissions" {
   for_each = toset([
     "roles/cloudbuild.builds.builder",
-    "roles/artifactregistry.writer",
     "roles/run.admin",
     "roles/iam.serviceAccountUser",
   ])
@@ -142,7 +125,6 @@ resource "google_cloudbuild_trigger" "github_trigger" {
   substitutions = {
     _SERVICE_NAME   = var.service_name
     _REGION         = var.region
-    _ARTIFACT_REPO  = var.artifact_repo_name
   }
 
   depends_on = [
@@ -161,7 +143,7 @@ resource "google_cloud_run_v2_service" "service" {
 
     containers {
       # Initial placeholder image - will be replaced by Cloud Build
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_repo_name}/${var.service_name}:latest"
+      image = "ghcr.io/tunen-org/gcp_artifact_registry_dart_pub:latest"
 
       env {
         name  = "GCP_PROJECT"
@@ -229,9 +211,4 @@ output "cloud_run_service_account" {
 output "cloud_build_service_account" {
   description = "Service account email for Cloud Build"
   value       = google_service_account.cloud_build_sa.email
-}
-
-output "docker_repository" {
-  description = "Artifact Registry Docker repository"
-  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_repo_name}"
 }
