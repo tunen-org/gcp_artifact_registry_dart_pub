@@ -11,6 +11,20 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
 
 void main(List<String> args) async {
+  // Setup logging
+  Logger.root.level = Level.ALL;
+  Logger.root.onRecord.listen((record) {
+    print(
+      '${record.level.name}: ${record.time}: ${record.loggerName}: ${record.message}',
+    );
+    if (record.error != null) {
+      print('Error: ${record.error}');
+    }
+    if (record.stackTrace != null) {
+      print('Stack trace: ${record.stackTrace}');
+    }
+  });
+
   // Config (needs to be restarted on change)
   final projectId = Platform.environment['GCP_PROJECT'];
   final location = Platform.environment['GCP_LOCATION'];
