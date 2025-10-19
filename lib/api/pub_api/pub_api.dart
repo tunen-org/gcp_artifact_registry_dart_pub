@@ -40,6 +40,12 @@ class PubApi {
     // Finalize package upload
     router.get('/api/packages/versions/newUploadFinish', _finalizeUpload);
 
+    // Deprecated: Download package archive directly
+    router.get(
+      '/packages/<package>/versions/<version>.tar.gz',
+      _downloadPackage,
+    );
+
     return router;
   }
 
@@ -261,6 +267,43 @@ class PubApi {
         400,
         'publish_error',
         'Failed to publish package: $e',
+      );
+    }
+  }
+
+  /// GET /packages/<package>/versions/<version>.tar.gz
+  /// Download package archive (deprecated endpoint, but still used by pub client)
+  Future<Response> _downloadPackage(
+    Request request,
+    String package,
+    String version,
+  ) async {
+    try {
+      _logger.info('Downloading package: $package@$version');
+
+      // Download the package archive
+      final archiveData = await _packageManagerRepository
+          .downloadPackageArchive(packageName: package, version: version);
+
+      if (archiveData == null) {
+        return _errorResponse(
+          404,
+          'not_found',
+          'Package "$package" version "$version" not found',
+        );
+      }
+
+      // Return the archive data
+      return Response.ok(
+        archiveData,
+        headers: {'Content-Type': 'application/octet-stream'},
+      );
+    } catch (e, stackTrace) {
+      _logger.severe('Error downloading package', e, stackTrace);
+      return _errorResponse(
+        500,
+        'internal_error',
+        'Failed to download package: $e',
       );
     }
   }

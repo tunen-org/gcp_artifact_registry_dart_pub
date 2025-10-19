@@ -131,6 +131,32 @@ class PackageManagerRepository {
     }
   }
 
+  /// Download a package archive
+  Future<Uint8List?> downloadPackageArchive({
+    required String packageName,
+    required String version,
+  }) async {
+    try {
+      _logger.info('Downloading package archive: $packageName@$version');
+
+      // Download from Artifact Registry
+      final archiveData = await _gcpArtifactRegistryService.downloadArtifact(
+        packageName: packageName,
+        version: version,
+        filename: '$packageName-$version.tar.gz',
+      );
+
+      _logger.info(
+        'Successfully downloaded package archive: $packageName@$version (${archiveData.length} bytes)',
+      );
+
+      return archiveData;
+    } catch (e, stackTrace) {
+      _logger.warning('Error downloading package archive: $e', e, stackTrace);
+      return null;
+    }
+  }
+
   /// Extract and parse pubspec.yaml from a tar.gz archive
   Future<Map<String, dynamic>> _extractPubspecFromArchive(
     List<int> archiveData,
