@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:googleapis/artifactregistry/v1.dart';
 import 'package:logging/logging.dart';
 
-import '../gcp_artifact_registry_service/gcp_artifact_registry_service_exception.dart';
+import 'gcp_artifact_registry_service_exception.dart';
 
 final _logger = Logger('GcpArtifactRegistryApiService');
 
