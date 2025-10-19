@@ -1,3 +1,7 @@
+# GCP Artifact Registry Dart Pub
+
+Implementation of the Dart [Hosted Pub Repository Specification Version 2](https://github.com/dart-lang/pub/blob/master/doc/repository-spec-v2.md) that wraps around GCP Artifact Registry.
+
 A server app built using [Shelf](https://pub.dev/packages/shelf),
 configured to enable running with [Docker](https://www.docker.com/).
 
