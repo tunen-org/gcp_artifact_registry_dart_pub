@@ -9,27 +9,18 @@ import 'package:yaml/yaml.dart';
 import '../../../domain/models/package.dart';
 import '../../../domain/models/package_archive.dart';
 import '../../../domain/models/package_version.dart';
-import '../../services/gcp_artifact_registry_service/gcp_artifact_registry_service.dart';
-import '../../services/google_auth_service/google_auth_service.dart';
+import '../../services/gcp_artifact_registry_api_service/gcp_artifact_registry_api_service.dart';
 
 final _logger = Logger('PackageManagerRepository');
 
 class PackageManagerRepository {
   PackageManagerRepository({
-    required GcpArtifactRegistryService gcpArtifactRegistryService,
-    required GoogleAuthService googleAuthService,
+    required GcpArtifactRegistryApiService gcpArtifactRegistryService,
     required String baseUrl,
   }) : _gcpArtifactRegistryService = gcpArtifactRegistryService,
-       _googleAuthService = googleAuthService,
-       _baseUrl = baseUrl {
-    _gcpArtifactRegistryService.authHeaderProvider = () {
-      final token = _googleAuthService.getAuthToken();
-      return token != null ? 'Bearer $token' : null;
-    };
-  }
+       _baseUrl = baseUrl;
 
-  final GcpArtifactRegistryService _gcpArtifactRegistryService;
-  final GoogleAuthService _googleAuthService;
+  final GcpArtifactRegistryApiService _gcpArtifactRegistryService;
   final String _baseUrl;
 
   /// Get all versions of a package
@@ -101,74 +92,6 @@ class PackageManagerRepository {
     } catch (e, stackTrace) {
       _logger.severe('Error getting package', e, stackTrace);
       throw Exception('Failed to get package: $e');
-    }
-  }
-
-  /// Get a specific version of a package
-  Future<PackageVersion?> getPackageVersion(
-    String packageName,
-    String version,
-  ) async {
-    try {
-      _logger.info('Getting package version: $packageName@$version');
-
-      final exists = await _gcpArtifactRegistryService.packageVersionExists(
-        packageName: packageName,
-        version: version,
-      );
-
-      if (!exists) {
-        _logger.info('Package version not found: $packageName@$version');
-        return null;
-      }
-
-      // Download the package
-      final archiveData = await _gcpArtifactRegistryService.downloadArtifact(
-        packageName: packageName,
-        version: version,
-        filename: '$packageName-$version.tar.gz',
-      );
-
-      // Extract pubspec
-      final pubspec = await _extractPubspecFromArchive(archiveData);
-
-      // Calculate SHA256
-      final sha256Hash = sha256.convert(archiveData).toString();
-
-      // Build archive URL
-      final archiveUrl =
-          '$_baseUrl/packages/$packageName/versions/$version.tar.gz';
-
-      return PackageVersion(
-        version: version,
-        archiveUrl: archiveUrl,
-        archiveSha256: sha256Hash,
-        pubspec: pubspec,
-      );
-    } catch (e, stackTrace) {
-      _logger.severe('Error getting package version', e, stackTrace);
-      throw Exception('Failed to get package version: $e');
-    }
-  }
-
-  /// Download a package archive
-  Future<Uint8List> downloadPackageArchive(
-    String packageName,
-    String version,
-  ) async {
-    try {
-      _logger.info('Downloading package archive: $packageName@$version');
-
-      final archiveData = await _gcpArtifactRegistryService.downloadArtifact(
-        packageName: packageName,
-        version: version,
-        filename: '$packageName-$version.tar.gz',
-      );
-
-      return Uint8List.fromList(archiveData);
-    } catch (e, stackTrace) {
-      _logger.severe('Error downloading package archive', e, stackTrace);
-      throw Exception('Failed to download package archive: $e');
     }
   }
 
