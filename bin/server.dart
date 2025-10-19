@@ -1,12 +1,12 @@
 import 'dart:io';
 
 import 'package:gcp_artifact_repository_dart/api/pub_api/pub_api.dart';
+import 'package:googleapis/artifactregistry/v1.dart';
 import 'package:gcp_artifact_repository_dart/data/repositories/package_manager_repository/package_manager_repository.dart';
-import 'package:gcp_artifact_repository_dart/data/services/gcp_artifact_registry_service/gcp_artifact_registry_service.dart';
-import 'package:gcp_artifact_repository_dart/data/services/google_auth_service/google_auth_service.dart';
+import 'package:gcp_artifact_repository_dart/data/services/gcp_artifact_registry_api_service/gcp_artifact_registry_api_service.dart';
 import 'package:gcp_artifact_repository_dart/domain/models/server_config.dart';
 import 'package:googleapis_auth/auth_io.dart';
-import 'package:http/http.dart' as http;
+import 'package:logging/logging.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
 
@@ -54,17 +54,15 @@ void main(List<String> args) async {
   final authClient = await clientViaApplicationDefaultCredentials(
     scopes: _scopes,
   );
-  final httpClient = http.Client();
-  final gcpArtifactRegistryService = GcpArtifactRegistryService(
-    client: httpClient,
-    projectId: config.projectId,
-    location: config.location,
-    repository: config.repository,
-  );
-  final googleAuthService = GoogleAuthService(authClient: authClient);
+  GcpArtifactRegistryApiService gcpArtifactRegistryService =
+      GcpArtifactRegistryApiService(
+        artifactRegistryApi: ArtifactRegistryApi(authClient),
+        projectId: config.projectId,
+        location: config.location,
+        repository: config.repository,
+      );
   final packageManagerRepository = PackageManagerRepository(
     gcpArtifactRegistryService: gcpArtifactRegistryService,
-    googleAuthService: googleAuthService,
     baseUrl: config.baseUrl,
   );
   final api = PubApi(
@@ -86,7 +84,6 @@ void main(List<String> args) async {
   ProcessSignal.sigint.watch().listen((_) async {
     print("Shutting down server");
     await server.close();
-    httpClient.close();
     authClient.close();
     print("Server shut down");
     exit(0);
