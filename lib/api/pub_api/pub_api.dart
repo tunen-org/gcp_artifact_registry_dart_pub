@@ -31,12 +31,6 @@ class PubApi {
     // List all versions of a package
     router.get('/api/packages/<package>', _listPackageVersions);
 
-    // Deprecated: Get specific package version (for backward compatibility)
-    router.get(
-      '/api/packages/<package>/versions/<version>',
-      _getPackageVersion,
-    );
-
     // Initiate package publishing
     router.get('/api/packages/versions/new', _initiatePublish);
 
@@ -45,12 +39,6 @@ class PubApi {
 
     // Finalize package upload
     router.get('/api/packages/versions/newUploadFinish', _finalizeUpload);
-
-    // Download package archive (deprecated but supported)
-    router.get(
-      '/packages/<package>/versions/<version>.tar.gz',
-      _downloadPackage,
-    );
 
     return router;
   }
@@ -62,9 +50,18 @@ class PubApi {
         // Check for proper Accept header
         final accept = request.headers['accept'] ?? '';
 
-        if (!accept.contains('application/vnd.pub.v2+json') &&
-            !accept.contains('application/octet-stream') &&
-            !accept.isEmpty) {
+        // Skip Accept header validation for:
+        // - POST requests (multipart uploads don't send Accept headers)
+        // - Requests without Accept header (be lenient)
+        // - Requests with valid Accept headers
+        final skipValidation =
+            request.method == 'POST' ||
+            accept.isEmpty ||
+            accept.contains('application/vnd.pub.v2+json') ||
+            accept.contains('application/octet-stream') ||
+            accept.contains('*/*');
+
+        if (!skipValidation) {
           return Response(
             406,
             body: jsonEncode(
@@ -79,14 +76,14 @@ class PubApi {
 
         final response = await handler(request);
 
-        // Add API version header to responses
-        return response.change(
-          headers: {
-            'Content-Type':
-                response.headers['Content-Type'] ??
-                'application/vnd.pub.v2+json',
-          },
-        );
+        // Add API version header to JSON responses
+        if (response.headers['Content-Type']?.contains('json') ?? false) {
+          return response.change(
+            headers: {'Content-Type': 'application/vnd.pub.v2+json'},
+          );
+        }
+
+        return response;
       };
     };
   }
@@ -117,61 +114,11 @@ class PubApi {
     }
   }
 
-  /// GET /api/packages/<package>/versions/<version>
-  /// Get specific package version (deprecated but supported)
-  Future<Response> _getPackageVersion(
-    Request request,
-    String package,
-    String version,
-  ) async {
-    try {
-      _logger.info('Getting package version: $package@$version');
-
-      final packageVersion = await _packageManagerRepository.getPackageVersion(
-        package,
-        version,
-      );
-
-      if (packageVersion == null) {
-        return _errorResponse(
-          404,
-          'not_found',
-          'Package "$package" version "$version" not found',
-        );
-      }
-
-      return Response.ok(
-        jsonEncode(packageVersion.toJson()),
-        headers: {'Content-Type': 'application/vnd.pub.v2+json'},
-      );
-    } catch (e, stackTrace) {
-      _logger.severe('Error getting package version', e, stackTrace);
-      return _errorResponse(
-        500,
-        'internal_error',
-        'Failed to retrieve package version: $e',
-      );
-    }
-  }
-
   /// GET /api/packages/versions/new
   /// Initiate package publishing
   Future<Response> _initiatePublish(Request request) async {
     try {
       _logger.info('Initiating package publish');
-
-      // Check for authorization (in GCP environment, this would be validated)
-      final auth = request.headers['authorization'];
-      if (auth == null || !auth.startsWith('Bearer ')) {
-        return Response(
-          401,
-          headers: {
-            'WWW-Authenticate':
-                'Bearer realm="pub", message="Authentication required. '
-                'In GCP environments, use gcloud credentials."',
-          },
-        );
-      }
 
       // Generate upload URL
       final uploadInfo = UploadInfo(
@@ -200,6 +147,8 @@ class PubApi {
       _logger.info('Uploading package');
 
       final contentType = request.headers['content-type'] ?? '';
+      _logger.info('Content-Type: $contentType');
+
       if (!contentType.contains('multipart/form-data')) {
         return _errorResponse(
           400,
@@ -210,6 +159,7 @@ class PubApi {
 
       // Read the entire body
       final bytes = await request.read().expand((chunk) => chunk).toList();
+      _logger.info('Received ${bytes.length} bytes');
 
       // Extract the boundary from content-type
       final boundary = _extractBoundary(contentType);
@@ -226,10 +176,14 @@ class PubApi {
 
       // Get session ID
       final sessionId = parts['session'] ?? _generateSessionId();
+      _logger.info('Session ID: $sessionId');
 
       // Get file data
       final fileData = parts['file'];
       if (fileData == null) {
+        _logger.warning(
+          'No file data found in multipart. Parts: ${parts.keys}',
+        );
         return _errorResponse(
           400,
           'missing_file',
@@ -237,9 +191,12 @@ class PubApi {
         );
       }
 
+      final fileBytes = fileData as List<int>;
+      _logger.info('File data size: ${fileBytes.length} bytes');
+
       // Parse the package archive
       final archive = await _packageManagerRepository.parsePackageArchive(
-        fileData is String ? utf8.encode(fileData) : fileData as List<int>,
+        fileBytes,
       );
 
       // Store the package archive in session
@@ -308,33 +265,6 @@ class PubApi {
     }
   }
 
-  /// GET /packages/<package>/versions/<version>.tar.gz
-  /// Download package archive (deprecated but supported)
-  Future<Response> _downloadPackage(
-    Request request,
-    String package,
-    String version,
-  ) async {
-    try {
-      _logger.info('Downloading package: $package@$version');
-
-      final archiveData = await _packageManagerRepository
-          .downloadPackageArchive(package, version);
-
-      return Response.ok(
-        archiveData,
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Disposition':
-              'attachment; filename="$package-$version.tar.gz"',
-        },
-      );
-    } catch (e, stackTrace) {
-      _logger.severe('Error downloading package', e, stackTrace);
-      return _errorResponse(404, 'not_found', 'Package not found: $e');
-    }
-  }
-
   /// Create an error response
   Response _errorResponse(int statusCode, String code, String message) {
     final error = ErrorResponse(code: code, message: message);
@@ -347,9 +277,7 @@ class PubApi {
 
   /// Generate a unique session ID
   String _generateSessionId() {
-    return DateTime.now().millisecondsSinceEpoch.toString() +
-        '_' +
-        (DateTime.now().microsecond % 1000).toString();
+    return '${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecond % 1000}';
   }
 
   /// Extract boundary from Content-Type header
@@ -361,45 +289,91 @@ class PubApi {
   /// Parse multipart form data
   Map<String, dynamic> _parseMultipartData(List<int> data, String boundary) {
     final parts = <String, dynamic>{};
-    final boundaryBytes = utf8.encode('--$boundary');
-    final dataString = utf8.decode(data, allowMalformed: true);
+    final boundaryMarker = utf8.encode('--$boundary');
 
-    // Split by boundary
-    final sections = dataString.split('--$boundary');
+    // Find all boundary positions
+    var pos = 0;
+    while (pos < data.length) {
+      // Look for boundary
+      final boundaryPos = _findBytes(data, boundaryMarker, pos);
+      if (boundaryPos == -1) break;
 
-    for (final section in sections) {
-      if (section.trim().isEmpty || section.trim() == '--') continue;
+      // Move past boundary and CRLF
+      pos = boundaryPos + boundaryMarker.length;
 
-      // Parse headers and content
-      final lines = section.split('\r\n');
+      // Skip CRLF after boundary
+      if (pos + 2 <= data.length && data[pos] == 13 && data[pos + 1] == 10) {
+        pos += 2;
+      }
+
+      // Find the end of headers (double CRLF)
+      final headersEnd = _findBytes(data, utf8.encode('\r\n\r\n'), pos);
+      if (headersEnd == -1) continue;
+
+      // Extract and parse headers
+      final headerBytes = data.sublist(pos, headersEnd);
+      final headerText = utf8.decode(headerBytes);
+      final headers = headerText.split('\r\n');
+
       String? name;
-      var contentStart = 0;
-
-      for (var i = 0; i < lines.length; i++) {
-        final line = lines[i];
-        if (line.toLowerCase().contains('content-disposition')) {
-          final nameMatch = RegExp(r'name="([^"]+)"').firstMatch(line);
+      for (final header in headers) {
+        if (header.toLowerCase().contains('content-disposition')) {
+          final nameMatch = RegExp(r'name="([^"]+)"').firstMatch(header);
           name = nameMatch?.group(1);
-        }
-        if (line.isEmpty) {
-          contentStart = i + 1;
           break;
         }
       }
 
-      if (name != null) {
-        // Get content (everything after headers)
-        final content = lines.skip(contentStart).join('\r\n').trim();
+      if (name == null) continue;
 
-        if (name == 'file') {
-          // For file, we need the raw bytes
-          parts[name] = data;
-        } else {
-          parts[name] = content;
-        }
+      // Content starts after double CRLF
+      final contentStart = headersEnd + 4;
+
+      // Find next boundary
+      final nextBoundaryPos = _findBytes(data, boundaryMarker, contentStart);
+      if (nextBoundaryPos == -1) break;
+
+      // Content ends before the CRLF before the next boundary
+      var contentEnd = nextBoundaryPos;
+      // Remove trailing CRLF before boundary
+      if (contentEnd >= 2 &&
+          data[contentEnd - 2] == 13 &&
+          data[contentEnd - 1] == 10) {
+        contentEnd -= 2;
       }
+
+      // Extract content
+      final contentBytes = data.sublist(contentStart, contentEnd);
+
+      if (name == 'file') {
+        // For file, store raw bytes
+        parts[name] = contentBytes;
+      } else {
+        // For text fields, decode as UTF-8
+        parts[name] = utf8.decode(contentBytes);
+      }
+
+      pos = nextBoundaryPos;
     }
 
     return parts;
+  }
+
+  /// Find a byte sequence in a list of bytes
+  int _findBytes(List<int> data, List<int> pattern, int start) {
+    if (pattern.isEmpty) return -1;
+
+    for (var i = start; i <= data.length - pattern.length; i++) {
+      var found = true;
+      for (var j = 0; j < pattern.length; j++) {
+        if (data[i + j] != pattern[j]) {
+          found = false;
+          break;
+        }
+      }
+      if (found) return i;
+    }
+
+    return -1;
   }
 }
